@@ -24,16 +24,73 @@ final class BrowserState: ObservableObject {
     // Menu-command target: the displayed webview the user last clicked.
     // Falls back to the active tab whenever the layout changes.
     @Published private(set) var focusedTab: WebViewModel
+    @Published private(set) var companionVisible: Bool
+    @Published private(set) var hideInDock: Bool
+    @Published private(set) var companionScale: Double
+    @Published private(set) var voiceActivationMode: VoiceActivationMode
+    @Published private(set) var experimentalCompanion: Bool
+    @Published private(set) var wakeWordStatus: WakeWordListener.Status = .off
+    /// Dedicated grok.com session that lives inside the Grokling window.
+    let mascotBrowser = WebViewModel()
+    /// Experimental companion: Mac dictation → Grok CLI → Mac speech.
+    let companionTalk = CompanionTalk()
+    var prepareMascotBrowser: (() -> Void)?
+    static weak var shared: BrowserState?
+
+    var isVoiceActive: Bool {
+        companionTalk.isActive
+            || mascotBrowser.isVoiceActive
+            || activeTab.isVoiceActive
+            || pinnedTab?.isVoiceActive == true
+    }
+
+    var wakeWordEnabled: Bool { voiceActivationMode == .heyGrok }
+
+    var isWakeWordListening: Bool { wakeWordStatus == .listening }
 
     private var mouseMonitor: Any?
     private var tabChangeForwarder: AnyCancellable?
+    private var voiceActiveWatcher: AnyCancellable?
+    private let wakeWord = WakeWordListener()
+    private static let companionVisibleKey = "companionVisible"
+    private static let hideInDockKey = "hideInDock"
+    private static let companionScaleKey = "companionScale"
+    private static let wakeWordEnabledKey = "wakeWordEnabled"
+    private static let voiceActivationModeKey = "voiceActivationMode"
+    private static let experimentalCompanionKey = "experimentalCompanion"
 
     init() {
         let tab = WebViewModel()
         tabs = [tab]
         activeTab = tab
         focusedTab = tab
+        if UserDefaults.standard.object(forKey: Self.companionVisibleKey) == nil {
+            companionVisible = true
+        } else {
+            companionVisible = UserDefaults.standard.bool(forKey: Self.companionVisibleKey)
+        }
+        hideInDock = UserDefaults.standard.bool(forKey: Self.hideInDockKey)
+        let storedScale = UserDefaults.standard.object(forKey: Self.companionScaleKey) == nil
+            ? 1.0
+            : UserDefaults.standard.double(forKey: Self.companionScaleKey)
+        companionScale = min(max(storedScale, 0.6), 2.0)
+        experimentalCompanion = UserDefaults.standard.bool(forKey: Self.experimentalCompanionKey)
+        if let raw = UserDefaults.standard.string(forKey: Self.voiceActivationModeKey),
+           let mode = VoiceActivationMode(rawValue: raw) {
+            voiceActivationMode = mode
+        } else if UserDefaults.standard.bool(forKey: Self.wakeWordEnabledKey) {
+            voiceActivationMode = .heyGrok
+        } else {
+            voiceActivationMode = .off
+        }
+        wakeWord.onTrigger = { [weak self] in
+            self?.startVoiceChat()
+        }
+        wakeWord.onStatusChange = { [weak self] status in
+            self?.wakeWordStatus = status
+        }
         rewireForwarding()
+        wakeWord.sync(enabled: voiceActivationMode == .heyGrok, voiceActive: false)
 
         // WKWebView swallows clicks before SwiftUI gestures see them, so the
         // last-clicked pane is tracked by peeking at mouse-downs here and
@@ -44,6 +101,91 @@ final class BrowserState: ObservableObject {
             MainActor.assumeIsolated { self?.updateFocus(for: event) }
             return event
         }
+
+        HotKeyManager.shared.onVoiceHotKey = { [weak self] in
+            self?.toggleVoiceChat()
+        }
+        HotKeyManager.shared.onStopVoice = { [weak self] in
+            self?.stopVoiceChat()
+        }
+        BrowserState.shared = self
+        if experimentalCompanion {
+            companionTalk.prewarm()
+        }
+    }
+
+    func startVoiceChat() {
+        CompanionDebug.log("voice.start experimental=\(experimentalCompanion) companionVisible=\(companionVisible) wake=\(wakeWordStatus) talkActive=\(companionTalk.isActive) mascotVoice=\(mascotBrowser.isVoiceActive)")
+        MicPermission.request()
+        if !companionVisible { setCompanionVisible(true) }
+        HotKeyManager.shared.suppressChatReveal = true
+        HotKeyManager.shared.hideChatWindow()
+        HotKeyManager.shared.setEscapeStopsVoice(true)
+        if experimentalCompanion {
+            wakeWord.sync(enabled: voiceActivationMode == .heyGrok, voiceActive: true)
+            mascotBrowser.stopVoiceChat()
+            companionTalk.start()
+        } else {
+            companionTalk.stop()
+            prepareMascotBrowser?()
+            mascotBrowser.startVoiceChat()
+        }
+    }
+
+    func stopVoiceChat() {
+        CompanionDebug.log("voice.stop experimental=\(experimentalCompanion) talk=\(companionTalk.isActive) mascot=\(mascotBrowser.isVoiceActive)")
+        HotKeyManager.shared.setEscapeStopsVoice(false)
+        companionTalk.stop()
+        mascotBrowser.stopVoiceChat()
+        if activeTab.isVoiceActive { activeTab.stopVoiceChat() }
+        if pinnedTab?.isVoiceActive == true { pinnedTab?.stopVoiceChat() }
+    }
+
+    func toggleVoiceChat() {
+        if isVoiceActive {
+            stopVoiceChat()
+        } else {
+            startVoiceChat()
+        }
+    }
+
+    func setCompanionVisible(_ visible: Bool) {
+        companionVisible = visible
+        UserDefaults.standard.set(visible, forKey: Self.companionVisibleKey)
+    }
+
+    func setHideInDock(_ hidden: Bool) {
+        hideInDock = hidden
+        UserDefaults.standard.set(hidden, forKey: Self.hideInDockKey)
+    }
+
+    func setCompanionScale(_ scale: Double) {
+        companionScale = min(max(scale, 0.6), 2.0)
+        UserDefaults.standard.set(companionScale, forKey: Self.companionScaleKey)
+    }
+
+    func setExperimentalCompanion(_ enabled: Bool) {
+        CompanionDebug.log("voice.experimental \(experimentalCompanion) → \(enabled)")
+        guard experimentalCompanion != enabled else { return }
+        if isVoiceActive { stopVoiceChat() }
+        experimentalCompanion = enabled
+        UserDefaults.standard.set(enabled, forKey: Self.experimentalCompanionKey)
+        if enabled {
+            companionTalk.prewarm()
+        } else {
+            companionTalk.shutdownWarm()
+        }
+    }
+
+    func setVoiceActivationMode(_ mode: VoiceActivationMode) {
+        voiceActivationMode = mode
+        UserDefaults.standard.set(mode.rawValue, forKey: Self.voiceActivationModeKey)
+        UserDefaults.standard.set(mode == .heyGrok, forKey: Self.wakeWordEnabledKey)
+        wakeWord.sync(enabled: mode == .heyGrok, voiceActive: isVoiceActive)
+    }
+
+    func setWakeWordEnabled(_ enabled: Bool) {
+        setVoiceActivationMode(enabled ? .heyGrok : .off)
     }
 
     // MARK: - Tabs
@@ -177,7 +319,27 @@ final class BrowserState: ObservableObject {
     // Nested ObservableObjects don't propagate: menu items disabled off the
     // focused tab's canGoBack/canGoForward would go stale without this.
     private func rewireForwarding() {
-        tabChangeForwarder = Publishers.MergeMany(tabs.map(\.objectWillChange))
+        var publishers = tabs.map(\.objectWillChange)
+        publishers.append(mascotBrowser.objectWillChange)
+        publishers.append(companionTalk.objectWillChange)
+        tabChangeForwarder = Publishers.MergeMany(publishers)
             .sink { [weak self] _ in self?.objectWillChange.send() }
+        rewireVoiceWatcher()
+    }
+
+    private func rewireVoiceWatcher() {
+        var flags = [companionTalk.$isActive.eraseToAnyPublisher()]
+        flags.append(mascotBrowser.$isVoiceActive.eraseToAnyPublisher())
+        flags.append(activeTab.$isVoiceActive.eraseToAnyPublisher())
+        if let pinnedTab {
+            flags.append(pinnedTab.$isVoiceActive.eraseToAnyPublisher())
+        }
+        voiceActiveWatcher = Publishers.MergeMany(flags)
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                guard let self else { return }
+                self.wakeWord.sync(enabled: self.voiceActivationMode == .heyGrok, voiceActive: self.isVoiceActive)
+                HotKeyManager.shared.setEscapeStopsVoice(self.isVoiceActive)
+            }
     }
 }

@@ -7,6 +7,7 @@
 //
 
 import AppKit
+import Carbon.HIToolbox
 import Combine
 import SwiftUI
 import WebKit
@@ -47,6 +48,7 @@ final class WebViewModel: NSObject, ObservableObject {
     @Published var zoomPercent = 100
     @Published var sidebarCSSWidth: Double = 248
     @Published var pageTitle = "Grok"
+    @Published var isVoiceActive = false
 
     let webView: WKWebView
 
@@ -54,6 +56,8 @@ final class WebViewModel: NSObject, ObservableObject {
     private var popupWindows: [NSWindow] = []
     private var activeDownloads: [WKDownload: URL] = [:]
     private let scriptMessageProxy = ScriptMessageProxy()
+    private var voiceStartToken = 0
+    private var voiceHoldUntil = Date.distantPast
 
     // Watches grok.com's sidebar (the full-height container hugging the
     // left edge): reports its CSS-pixel width so native overlays can track
@@ -71,6 +75,9 @@ final class WebViewModel: NSObject, ObservableObject {
         const CSS = 'html:not(.native-sidebar-invert) { background-color: #0a0a0a !important; }'
             + ' html.native-sidebar-invert [data-native-sidebar] { filter: invert(1) hue-rotate(180deg); }'
             + ' html.native-sidebar-invert [data-native-sidebar] :is(img, video, canvas) { filter: invert(1) hue-rotate(180deg); }'
+            // Room for the macOS traffic lights sitting over the top-left.
+            + ' [data-native-sidebar] { padding-top: 38px !important; box-sizing: border-box !important; }'
+            + ' [data-native-sidebar] > :first-child { margin-top: 0 !important; }'
             + ' [data-native-newchat] {'
             + '   border-radius: 10px !important;'
             + '   font-weight: 500 !important;'
@@ -216,6 +223,7 @@ final class WebViewModel: NSObject, ObservableObject {
         ]
 
         webView.load(URLRequest(url: Self.homeURL))
+        startVoicePolling()
     }
 
     // MARK: - Commands
@@ -248,11 +256,335 @@ final class WebViewModel: NSObject, ObservableObject {
         setZoom(1.0)
     }
 
+    /// Shows grok.com if needed, then clicks the site's Voice Mode control.
+    /// grok.com has no public deep link, so this finds the labeled button the
+    /// same way we tag "New Chat": visible text / aria-label, not hashed classes.
+    func startVoiceChat() {
+        MicPermission.request()
+        voiceStartToken += 1
+        let token = voiceStartToken
+        if !isOnGrok {
+            webView.load(URLRequest(url: Self.homeURL))
+        }
+        webView.window?.makeKey()
+        webView.window?.makeFirstResponder(webView)
+        Task { @MainActor [weak self] in
+            await self?.attemptVoiceStart(token: token)
+        }
+    }
+
+    func stopVoiceChat() {
+        voiceStartToken += 1
+        isVoiceActive = false
+        pressEscape()
+        Task { @MainActor [weak self] in
+            await self?.clickEndVoiceButton()
+        }
+    }
+
+    func toggleVoiceChat() {
+        if isVoiceActive {
+            stopVoiceChat()
+        } else {
+            startVoiceChat()
+        }
+    }
+
     private func setZoom(_ value: Double) {
         webView.pageZoom = min(max(value, 0.5), 3.0)
         zoomPercent = Int((webView.pageZoom * 100).rounded())
         UserDefaults.standard.set(webView.pageZoom, forKey: Self.zoomDefaultsKey)
     }
+
+    // MARK: - Voice
+
+    private var isOnGrok: Bool {
+        guard let host = webView.url?.host()?.lowercased() else { return false }
+        return host == "grok.com" || host.hasSuffix(".grok.com")
+    }
+
+    private enum VoiceProbe {
+        case alreadyOpen
+        case found(CGPoint)
+        case missing
+    }
+
+    private func attemptVoiceStart(token: Int) async {
+        if case .alreadyOpen = await probeVoiceUI() {
+            isVoiceActive = true
+            return
+        }
+
+        voiceHoldUntil = Date().addingTimeInterval(4)
+
+        for _ in 0..<16 {
+            guard token == voiceStartToken else { return }
+            switch await probeVoiceUI() {
+            case .alreadyOpen:
+                isVoiceActive = true
+                return
+            case .found:
+                await clickVoiceButtonInPage()
+                isVoiceActive = true
+                return
+            case .missing:
+                break
+            }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+        await clickVoiceButtonInPage()
+        isVoiceActive = true
+    }
+
+    private func probeVoiceUI() async -> VoiceProbe {
+        guard let result = try? await webView.evaluateJavaScript(Self.voiceProbeScript) as? [String: Any],
+              let status = result["status"] as? String else {
+            return .missing
+        }
+        if status == "already" { return .alreadyOpen }
+        if status == "found",
+           let x = (result["x"] as? NSNumber)?.doubleValue,
+           let y = (result["y"] as? NSNumber)?.doubleValue {
+            return .found(CGPoint(x: x, y: y))
+        }
+        return .missing
+    }
+
+    private func clickVoiceButtonInPage() async {
+        _ = try? await webView.evaluateJavaScript(Self.voiceClickScript)
+    }
+
+    /// grok.com binds Voice Mode to ⌘⇧O. Synthesize that so we don't depend
+    /// on hashed classes or an accessible name that isn't in the DOM.
+    private func pressSiteVoiceShortcut() {
+        guard let window = webView.window else { return }
+        window.makeKey()
+        window.makeFirstResponder(webView)
+        let now = ProcessInfo.processInfo.systemUptime
+        func keyEvent(_ type: NSEvent.EventType) -> NSEvent? {
+            NSEvent.keyEvent(
+                with: type,
+                location: .zero,
+                modifierFlags: [.command, .shift],
+                timestamp: now,
+                windowNumber: window.windowNumber,
+                context: nil,
+                characters: "o",
+                charactersIgnoringModifiers: "o",
+                isARepeat: false,
+                keyCode: UInt16(kVK_ANSI_O)
+            )
+        }
+        if let down = keyEvent(.keyDown) {
+            webView.keyDown(with: down)
+        }
+        if let up = keyEvent(.keyUp) {
+            webView.keyUp(with: up)
+        }
+    }
+
+    private func pressEscape() {
+        guard let window = webView.window else { return }
+        window.makeFirstResponder(webView)
+        let now = ProcessInfo.processInfo.systemUptime
+        func keyEvent(_ type: NSEvent.EventType) -> NSEvent? {
+            NSEvent.keyEvent(
+                with: type,
+                location: .zero,
+                modifierFlags: [],
+                timestamp: now,
+                windowNumber: window.windowNumber,
+                context: nil,
+                characters: "\u{1b}",
+                charactersIgnoringModifiers: "\u{1b}",
+                isARepeat: false,
+                keyCode: UInt16(kVK_Escape)
+            )
+        }
+        if let down = keyEvent(.keyDown) { webView.keyDown(with: down) }
+        if let up = keyEvent(.keyUp) { webView.keyUp(with: up) }
+    }
+
+    private func clickEndVoiceButton() async {
+        _ = try? await webView.evaluateJavaScript(Self.voiceEndScript)
+    }
+
+    private func startVoicePolling() {
+        Task { @MainActor [weak self] in
+            while let self {
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                if Date() < self.voiceHoldUntil { continue }
+                switch await self.probeVoiceUI() {
+                case .alreadyOpen:
+                    if !self.isVoiceActive { self.isVoiceActive = true }
+                case .found:
+                    if self.isVoiceActive { self.isVoiceActive = false }
+                case .missing:
+                    break
+                }
+            }
+        }
+    }
+
+    // Synthesized click in view coordinates so getUserMedia sees a real
+    // mouse event. JS .click() is not a user gesture and can fail the first
+    // time the site asks for the microphone.
+    private func clickWebContent(atCSSPoint cssPoint: CGPoint) {
+        guard let window = webView.window else { return }
+        let zoom = webView.pageZoom
+        let viewPoint = NSPoint(x: cssPoint.x * zoom, y: cssPoint.y * zoom)
+        let locationInWindow = webView.convert(viewPoint, to: nil)
+        let now = ProcessInfo.processInfo.systemUptime
+
+        let down = NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: locationInWindow,
+            modifierFlags: [],
+            timestamp: now,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 1
+        )
+        let up = NSEvent.mouseEvent(
+            with: .leftMouseUp,
+            location: locationInWindow,
+            modifierFlags: [],
+            timestamp: now + 0.03,
+            windowNumber: window.windowNumber,
+            context: nil,
+            eventNumber: 1,
+            clickCount: 1,
+            pressure: 0
+        )
+        if let down { window.sendEvent(down) }
+        if let up { window.sendEvent(up) }
+    }
+
+    // Status: "already" | "found" | "missing". Found includes CSS-pixel
+    // center of the Voice Mode control (not the dictation microphone).
+    private static let voiceProbeScript = """
+    (function () {
+        function labelledBy(el) {
+            const ids = (el.getAttribute('aria-labelledby') || '').trim();
+            if (!ids) { return ''; }
+            return ids.split(/\\s+/).map(function (id) {
+                const n = document.getElementById(id);
+                return n ? (n.textContent || '') : '';
+            }).join(' ');
+        }
+        function text(el) {
+            return ((el.getAttribute('aria-label') || '') + ' '
+                + labelledBy(el) + ' '
+                + (el.getAttribute('title') || '') + ' '
+                + (el.getAttribute('data-tooltip') || '') + ' '
+                + (el.getAttribute('aria-keyshortcuts') || '') + ' '
+                + (el.textContent || '')).replace(/\\s+/g, ' ').trim().toLowerCase();
+        }
+        function visible(el) {
+            const r = el.getBoundingClientRect();
+            if (r.width < 4 || r.height < 4) { return false; }
+            const st = getComputedStyle(el);
+            if (st.visibility === 'hidden' || st.display === 'none' || Number(st.opacity) === 0) {
+                return false;
+            }
+            return true;
+        }
+        function isVoiceModeLabel(l) {
+            if (!l) { return false; }
+            if (/(dictat|speech.to.text|voice input|use microphone|voicemail)/.test(l)) { return false; }
+            if (/enter voice|voice mode|start voice|start voice mode/.test(l)) { return true; }
+            if (/meta\\+shift\\+o|cmd\\+shift\\+o|command\\+shift\\+o/.test(l)) { return true; }
+            if (l === 'voice' || (/\\bvoice\\b/.test(l) && l.length < 28)) { return true; }
+            return false;
+        }
+        function isEndVoiceLabel(l) {
+            return /(end|stop|leave|exit|close)\\s+(voice|call|session)/.test(l)
+                || /leave voice|exit voice|end voice|close voice/.test(l);
+        }
+        const nodes = Array.from(document.querySelectorAll('button, a, [role="button"], [aria-keyshortcuts]')).filter(visible);
+        const labels = nodes.map(text);
+        if (labels.some(isEndVoiceLabel) || (labels.some(l => l === 'mute' || l === 'unmute') && labels.some(l => /voice|end/.test(l)))) {
+            return { status: 'already' };
+        }
+        let el = nodes.find(n => isVoiceModeLabel(text(n)));
+        if (!el) {
+            const input = document.querySelector('textarea, [contenteditable="true"]');
+            let root = input && (input.closest('form') || input.parentElement);
+            for (let i = 0; i < 8 && root && !el; i++) {
+                el = Array.from(root.querySelectorAll('button, [role="button"]'))
+                    .filter(visible)
+                    .find(n => isVoiceModeLabel(text(n)));
+                root = root.parentElement;
+            }
+        }
+        if (!el) { return { status: 'missing' }; }
+        const r = el.getBoundingClientRect();
+        return { status: 'found', x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    })();
+    """
+
+    private static let voiceClickScript = """
+    (function () {
+        function labelledBy(el) {
+            const ids = (el.getAttribute('aria-labelledby') || '').trim();
+            if (!ids) { return ''; }
+            return ids.split(/\\s+/).map(function (id) {
+                const n = document.getElementById(id);
+                return n ? (n.textContent || '') : '';
+            }).join(' ');
+        }
+        function text(el) {
+            return ((el.getAttribute('aria-label') || '') + ' '
+                + labelledBy(el) + ' '
+                + (el.getAttribute('title') || '') + ' '
+                + (el.getAttribute('aria-keyshortcuts') || '') + ' '
+                + (el.textContent || '')).replace(/\\s+/g, ' ').trim().toLowerCase();
+        }
+        function visible(el) {
+            const r = el.getBoundingClientRect();
+            return r.width >= 4 && r.height >= 4;
+        }
+        function isVoiceModeLabel(l) {
+            if (!l) { return false; }
+            if (/(dictat|speech.to.text|voice input|use microphone|voicemail)/.test(l)) { return false; }
+            if (/enter voice|voice mode|start voice/.test(l)) { return true; }
+            if (/meta\\+shift\\+o|cmd\\+shift\\+o/.test(l)) { return true; }
+            if (l === 'voice' || (/\\bvoice\\b/.test(l) && l.length < 28)) { return true; }
+            return false;
+        }
+        const nodes = Array.from(document.querySelectorAll('button, a, [role="button"], [aria-keyshortcuts]'));
+        const allow = nodes.find(n => /^allow all$/i.test(text(n).trim()));
+        if (allow) { allow.click(); }
+        const el = nodes.find(n => visible(n) && isVoiceModeLabel(text(n)));
+        if (el) { el.click(); return 'clicked:' + text(el).slice(0, 60); }
+        return 'not-found';
+    })();
+    """
+
+    private static let voiceEndScript = """
+    (function () {
+        function text(el) {
+            return ((el.getAttribute('aria-label') || '') + ' '
+                + (el.getAttribute('title') || '') + ' '
+                + (el.textContent || '')).replace(/\\s+/g, ' ').trim().toLowerCase();
+        }
+        function visible(el) {
+            const r = el.getBoundingClientRect();
+            return r.width >= 4 && r.height >= 4;
+        }
+        function isEnd(l) {
+            return /(end|stop|leave|exit|close)\\s+(voice|call|session)/.test(l)
+                || l === 'end call' || l === 'end' || l === 'hang up';
+        }
+        const nodes = Array.from(document.querySelectorAll('button, a, [role="button"]')).filter(visible);
+        const el = nodes.find(n => isEnd(text(n)));
+        if (el) { el.click(); return true; }
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', keyCode: 27, which: 27, bubbles: true }));
+        return false;
+    })();
+    """
 
     // MARK: - Script messages
 

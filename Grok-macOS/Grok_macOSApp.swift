@@ -14,10 +14,11 @@ struct Grok_macOSApp: App {
     @StateObject private var state = BrowserState()
 
     var body: some Scene {
-        Window("Grok", id: "main") {
-            ContentView(state: state)
+        // No Window scene — SwiftUI was forcing the chat window on every
+        // activation. Chat is an AppKit window opened only on demand.
+        Settings {
+            SettingsView(state: state)
         }
-        .defaultSize(width: 1200, height: 800)
         .commands {
             BrowserCommands(state: state)
         }
@@ -25,9 +26,32 @@ struct Grok_macOSApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private var companion: CompanionController?
+    private let statusBar = StatusBarController()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        CompanionDebug.log("app.launch experimental=\(BrowserState.shared?.experimentalCompanion ?? false) grok=\(GrokCLI.resolveBinary()?.path ?? "MISSING")")
         HotKeyManager.shared.register()
+        DispatchQueue.main.async { [weak self] in
+            if let state = BrowserState.shared {
+                self?.attachCompanion(state: state)
+                self?.statusBar.attach(state: state)
+            }
+            let siriVoice = PendingVoiceStart.isPending
+            if !siriVoice, BrowserState.shared?.hideInDock != true {
+                ChatWindowController.shared.show()
+            }
+            PendingVoiceStart.flush()
+        }
+    }
+
+    func attachCompanion(state: BrowserState) {
+        guard companion == nil else { return }
+        companion = CompanionController(state: state)
+    }
+
+    static func revealMainWindow() {
+        ChatWindowController.shared.show()
     }
 
     // Keep running when the window closes so Option+Space can resummon.
@@ -36,9 +60,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag {
-            HotKeyManager.shared.showMainWindow()
-        }
+        if HotKeyManager.shared.suppressChatReveal { return false }
+        HotKeyManager.shared.showMainWindow()
         return true
     }
 }

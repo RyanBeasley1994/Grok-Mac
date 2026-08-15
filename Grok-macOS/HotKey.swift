@@ -2,8 +2,9 @@
 //  HotKey.swift
 //  Grok-macOS
 //
-//  Global Option+Space hotkey via Carbon RegisterEventHotKey: works inside
-//  the sandbox and needs no Accessibility/Input Monitoring permission.
+//  Global hotkeys via Carbon RegisterEventHotKey: Option+Space toggles the
+//  window, Option+Shift+Space starts voice. Works inside the sandbox and
+//  needs no Accessibility/Input Monitoring permission.
 //
 
 import AppKit
@@ -15,50 +16,157 @@ final class HotKeyManager {
 
     static let shared = HotKeyManager()
 
-    weak var mainWindow: NSWindow?
+    static let signature = OSType(0x47_52_4F_4B) // 'GROK'
+    static let toggleHotKeyID: UInt32 = 1
+    static let voiceHotKeyID: UInt32 = 2
+    static let escapeHotKeyID: UInt32 = 3
 
-    private var hotKeyRef: EventHotKeyRef?
+    weak var mainWindow: NSWindow?
+    /// Voice start must not raise the SwiftUI chat window.
+    var suppressChatReveal = false
+
+    // BrowserState installs this so Option+Shift+Space can start voice on
+    // the live tab after the window is ordered front.
+    var onVoiceHotKey: (() -> Void)?
+    var onStopVoice: (() -> Void)?
+
+    private var toggleHotKeyRef: EventHotKeyRef?
+    private var voiceHotKeyRef: EventHotKeyRef?
+    private var escapeHotKeyRef: EventHotKeyRef?
+    private var escapeMonitor: Any?
     private var handlerRef: EventHandlerRef?
 
     private init() {}
 
     func register() {
-        guard hotKeyRef == nil else { return }
+        if handlerRef == nil {
+            var eventType = EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: UInt32(kEventHotKeyPressed)
+            )
+            InstallEventHandler(GetApplicationEventTarget(), hotKeyEventHandler, 1, &eventType, nil, &handlerRef)
+        }
+        reregister()
+    }
 
-        var eventType = EventTypeSpec(
-            eventClass: OSType(kEventClassKeyboard),
-            eventKind: UInt32(kEventHotKeyPressed)
-        )
-        InstallEventHandler(GetApplicationEventTarget(), hotKeyEventHandler, 1, &eventType, nil, &handlerRef)
+    func unregister() {
+        if let toggleHotKeyRef {
+            UnregisterEventHotKey(toggleHotKeyRef)
+            self.toggleHotKeyRef = nil
+        }
+        if let voiceHotKeyRef {
+            UnregisterEventHotKey(voiceHotKeyRef)
+            self.voiceHotKeyRef = nil
+        }
+        setEscapeStopsVoice(false)
+    }
 
-        let hotKeyID = EventHotKeyID(signature: OSType(0x47_52_4F_4B), id: 1) // 'GROK'
+    func reregister() {
+        unregister()
+        let toggle = KeyCombo.stored(.toggle)
         RegisterEventHotKey(
-            UInt32(kVK_Space),
-            UInt32(optionKey),
-            hotKeyID,
+            toggle.keyCode,
+            toggle.carbonModifiers,
+            EventHotKeyID(signature: Self.signature, id: Self.toggleHotKeyID),
             GetApplicationEventTarget(),
             0,
-            &hotKeyRef
+            &toggleHotKeyRef
         )
+        let voice = KeyCombo.stored(.voice)
+        RegisterEventHotKey(
+            voice.keyCode,
+            voice.carbonModifiers,
+            EventHotKeyID(signature: Self.signature, id: Self.voiceHotKeyID),
+            GetApplicationEventTarget(),
+            0,
+            &voiceHotKeyRef
+        )
+    }
+
+    func handle(hotKeyID: EventHotKeyID) {
+        guard hotKeyID.signature == Self.signature else { return }
+        switch hotKeyID.id {
+        case Self.toggleHotKeyID:
+            toggle()
+        case Self.voiceHotKeyID:
+            startVoiceChat()
+        case Self.escapeHotKeyID:
+            onStopVoice?()
+        default:
+            break
+        }
+    }
+
+    /// While a voice session is live, Esc hangs up (global + in-app).
+    func setEscapeStopsVoice(_ enabled: Bool) {
+        if let escapeHotKeyRef {
+            UnregisterEventHotKey(escapeHotKeyRef)
+            self.escapeHotKeyRef = nil
+        }
+        if let escapeMonitor {
+            NSEvent.removeMonitor(escapeMonitor)
+            self.escapeMonitor = nil
+        }
+        guard enabled else { return }
+        RegisterEventHotKey(
+            UInt32(kVK_Escape),
+            0,
+            EventHotKeyID(signature: Self.signature, id: Self.escapeHotKeyID),
+            GetApplicationEventTarget(),
+            0,
+            &escapeHotKeyRef
+        )
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.keyCode == UInt16(kVK_Escape) else { return event }
+            MainActor.assumeIsolated { HotKeyManager.shared.onStopVoice?() }
+            return nil
+        }
     }
 
     func toggle() {
-        if NSApp.isActive, let window = mainWindow, window.isVisible {
-            NSApp.hide(nil)
-        } else {
-            showMainWindow()
-        }
+        ChatWindowController.shared.toggle()
     }
 
-    func showMainWindow() {
-        // Cooperative activation: take focus from the frontmost app so the
-        // hotkey works even while another app is active.
+    func isMainWindowShowing() -> Bool {
+        ChatWindowController.shared.isShowing()
+    }
+
+    func startVoiceChat() {
+        onVoiceHotKey?()
+    }
+
+    func activateApp() {
         if let frontmost = NSWorkspace.shared.frontmostApplication, frontmost != .current {
-            NSRunningApplication.current.activate(from: frontmost, options: [.activateAllWindows])
+            NSRunningApplication.current.activate(from: frontmost, options: [])
         } else {
             NSApp.activate()
         }
-        mainWindow?.makeKeyAndOrderFront(nil)
+    }
+
+    func hideChatWindow() {
+        ChatWindowController.shared.hide()
+    }
+
+    func showMainWindow() {
+        ChatWindowController.shared.show()
+    }
+
+    /// After voice starts, put the chat away if we only opened it for the mic.
+    func minimizeMainWindow() {
+        guard let window = mainWindow else { return }
+        if BrowserState.shared?.hideInDock == true {
+            window.orderOut(nil)
+        } else {
+            window.miniaturize(nil)
+        }
+    }
+
+    /// Keep the signed-in page alive and on-screen for the mic, but invisible.
+    /// Opening the chat UI is opt-in via Option+Space.
+    func concealMainWindow() {
+        // Unused: fading the chat window made it impossible to reopen
+        // (isVisible stayed true). Voice starts on the real window instead.
+        showMainWindow()
     }
 }
 
@@ -69,8 +177,20 @@ private nonisolated func hotKeyEventHandler(
     _ event: EventRef?,
     _ userData: UnsafeMutableRawPointer?
 ) -> OSStatus {
+    var hotKeyID = EventHotKeyID()
+    if let event {
+        GetEventParameter(
+            event,
+            EventParamName(kEventParamDirectObject),
+            EventParamType(typeEventHotKeyID),
+            nil,
+            MemoryLayout<EventHotKeyID>.size,
+            nil,
+            &hotKeyID
+        )
+    }
     MainActor.assumeIsolated {
-        HotKeyManager.shared.toggle()
+        HotKeyManager.shared.handle(hotKeyID: hotKeyID)
     }
     return noErr
 }
@@ -84,6 +204,11 @@ struct WindowGrabber: NSViewRepresentable {
             super.viewDidMoveToWindow()
             if let window {
                 HotKeyManager.shared.mainWindow = window
+                window.titleVisibility = .hidden
+                window.titlebarAppearsTransparent = true
+                window.styleMask.insert(.fullSizeContentView)
+                window.isMovableByWindowBackground = false
+                window.backgroundColor = NSColor(white: 0.08, alpha: 1)
             }
         }
     }
@@ -92,5 +217,15 @@ struct WindowGrabber: NSViewRepresentable {
         GrabberView()
     }
 
+    func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+/// Transparent region whose mouse-downs drag the window — used in place of a titlebar.
+struct TitlebarDragRegion: NSViewRepresentable {
+    private final class DragView: NSView {
+        override var mouseDownCanMoveWindow: Bool { true }
+    }
+
+    func makeNSView(context: Context) -> NSView { DragView() }
     func updateNSView(_ nsView: NSView, context: Context) {}
 }

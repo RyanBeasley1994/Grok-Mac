@@ -15,11 +15,17 @@ struct BrowserCommands: Commands {
             Button("New Chat") { state.focusedTab.newChat() }
                 .keyboardShortcut("n", modifiers: .command)
 
-            Button("New Tab") { state.newTab() }
-                .keyboardShortcut("t", modifiers: .command)
+            Button(state.isVoiceActive ? "Stop Voice Chat" : "Start Voice Chat") {
+                state.toggleVoiceChat()
+            }
+            // No ⌘⇧O here — that's grok.com's toggle. Binding it in the
+            // menu would recapture the key we send into the hidden webview
+            // and immediately stop the session.
 
-            Button("Close Tab") { state.closeTab(state.focusedTab) }
-                .keyboardShortcut("w", modifiers: .command)
+            Button("Close") {
+                HotKeyManager.shared.mainWindow?.performClose(nil)
+            }
+            .keyboardShortcut("w", modifiers: .command)
         }
 
         CommandMenu("Navigate") {
@@ -42,26 +48,29 @@ struct BrowserCommands: Commands {
                 .keyboardShortcut("h", modifiers: [.command, .shift])
         }
 
-        CommandMenu("Tabs") {
-            Button("Show Next Tab") { state.nextTab() }
-                .keyboardShortcut("]", modifiers: [.command, .shift])
+        CommandMenu("Companion") {
+            Button(state.companionVisible ? "Hide Desktop Companion" : "Show Desktop Companion") {
+                state.setCompanionVisible(!state.companionVisible)
+            }
+            .keyboardShortcut("m", modifiers: [.command, .shift])
 
-            Button("Show Previous Tab") { state.previousTab() }
-                .keyboardShortcut("[", modifiers: [.command, .shift])
-
-            Divider()
-
-            ForEach(1...9, id: \.self) { i in
-                Button("Tab \(i)") { state.selectTab(at: i - 1) }
-                    .keyboardShortcut(KeyEquivalent(Character("\(i)")), modifiers: .command)
-                    .disabled(i > state.tabs.count)
+            Menu("Start voice with") {
+                ForEach(VoiceActivationMode.allCases) { mode in
+                    Button(mode.title) {
+                        state.setVoiceActivationMode(mode)
+                    }
+                }
             }
 
-            Divider()
+            Button(state.experimentalCompanion
+                   ? "Turn Off Experimental Companion"
+                   : "Turn On Experimental Companion") {
+                state.setExperimentalCompanion(!state.experimentalCompanion)
+            }
 
-            Button("Close Split View") { state.closeSplit() }
-                .keyboardShortcut("d", modifiers: .command)
-                .disabled(!state.isSplit)
+            Button("Settings…") {
+                SettingsWindow.open()
+            }
         }
 
         CommandGroup(after: .toolbar) {

@@ -254,7 +254,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 9AZ9MMS68X;
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
@@ -264,9 +264,12 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Grok;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_NSAudioCaptureUsageDescription = "Grok uses the microphone for voice conversations and to listen for “Hey Grok”.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Grok uses the camera for video input during voice conversations.";
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Grok uses the microphone for voice conversations.";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Ryan Beasley. Based on Grok-macOS by Nicholas Hershy.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Grok uses the microphone for voice conversations and to listen for “Hey Grok”.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Grok uses speech recognition to hear you during voice conversations and to listen on-device for “Hey Grok”.";
+				INFOPLIST_KEY_NSSiriUsageDescription = "Siri can start a Grok voice chat when you say “Hey Siri, talk to Grok”.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -293,7 +296,7 @@
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 9AZ9MMS68X;
-				ENABLE_APP_SANDBOX = YES;
+				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_OUTGOING_NETWORK_CONNECTIONS = YES;
 				ENABLE_PREVIEWS = YES;
@@ -303,9 +306,12 @@
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_CFBundleDisplayName = Grok;
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_NSAudioCaptureUsageDescription = "Grok uses the microphone for voice conversations and to listen for “Hey Grok”.";
 				INFOPLIST_KEY_NSCameraUsageDescription = "Grok uses the camera for video input during voice conversations.";
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Grok uses the microphone for voice conversations.";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "Copyright © 2026 Ryan Beasley. Based on Grok-macOS by Nicholas Hershy.";
+				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Grok uses the microphone for voice conversations and to listen for “Hey Grok”.";
+				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Grok uses speech recognition to hear you during voice conversations and to listen on-device for “Hey Grok”.";
+				INFOPLIST_KEY_NSSiriUsageDescription = "Siri can start a Grok voice chat when you say “Hey Siri, talk to Grok”.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",

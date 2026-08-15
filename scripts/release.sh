@@ -3,9 +3,9 @@
 # Builds, signs, notarizes, and packages Grok.app into a distributable DMG.
 #
 # One-time setup (see RELEASING.md):
-#   xcrun notarytool store-credentials "grok-notary" --apple-id <apple-id> --team-id 9AZ9MMS68X
+#   xcrun notarytool store-credentials "grok-notary" --apple-id <apple-id> --team-id <YOUR_TEAM_ID>
 #
-# Usage: ./scripts/release.sh
+# Usage: DEVELOPMENT_TEAM=<YOUR_TEAM_ID> ./scripts/release.sh
 # Output: dist/Grok-<version>.dmg — signed, notarized, stapled, ready for GitHub Releases.
 
 set -euo pipefail
@@ -13,12 +13,19 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT="$REPO_ROOT/Grok-macOS.xcodeproj"
 SCHEME="Grok-macOS"
-TEAM_ID="9AZ9MMS68X"
+TEAM_ID="${DEVELOPMENT_TEAM:-}"
 NOTARY_PROFILE="grok-notary"
 DIST="$REPO_ROOT/dist"
 ARCHIVE="$DIST/Grok.xcarchive"
 EXPORT_DIR="$DIST/export"
 APP="$EXPORT_DIR/Grok.app"
+
+if [[ -z "$TEAM_ID" ]]; then
+    echo "ERROR: Set DEVELOPMENT_TEAM to your Apple Developer Team ID." >&2
+    echo "  DEVELOPMENT_TEAM=<YOUR_TEAM_ID> ./scripts/release.sh" >&2
+    echo "See RELEASING.md. Do not use the original project's team ID." >&2
+    exit 1
+fi
 
 step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 
@@ -70,9 +77,11 @@ xcodebuild archive \
     -quiet
 
 step "Exporting with Developer ID signing"
+EXPORT_OPTIONS="$DIST/exportOptions.plist"
+sed "s/YOUR_TEAM_ID/$TEAM_ID/" "$REPO_ROOT/scripts/exportOptions.plist" > "$EXPORT_OPTIONS"
 xcodebuild -exportArchive \
     -archivePath "$ARCHIVE" \
-    -exportOptionsPlist "$REPO_ROOT/scripts/exportOptions.plist" \
+    -exportOptionsPlist "$EXPORT_OPTIONS" \
     -exportPath "$EXPORT_DIR" \
     -allowProvisioningUpdates \
     -quiet

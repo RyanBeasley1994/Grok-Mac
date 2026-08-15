@@ -1,0 +1,19 @@
+Grok for macOS
+==============
+
+A beasley.dev project by Ryan Beasley.
+https://beasley.dev
+
+This repository is a fork of Grok-macOS by Nicholas Hershy:
+
+    https://github.com/nhershy/Grok-macOS
+
+Original work Copyright (c) 2026 Nicholas Hershy.
+Subsequent modifications Copyright (c) 2026 Ryan Beasley.
+
+The original project is licensed under the MIT License. This fork
+continues under the same MIT License. See LICENSE for the full text.
+
+This project is unofficial and is not affiliated with, endorsed by,
+or connected to xAI. "Grok" is a trademark of xAI. The app wraps
+the grok.com website in a native macOS window.
