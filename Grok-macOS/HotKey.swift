@@ -154,11 +154,7 @@ final class HotKeyManager {
     /// After voice starts, put the chat away if we only opened it for the mic.
     func minimizeMainWindow() {
         guard let window = mainWindow else { return }
-        if BrowserState.shared?.hideInDock == true {
-            window.orderOut(nil)
-        } else {
-            window.miniaturize(nil)
-        }
+        ChatWindowController.shared.hide()
     }
 
     /// Keep the signed-in page alive and on-screen for the mic, but invisible.

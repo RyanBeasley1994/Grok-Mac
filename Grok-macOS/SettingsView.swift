@@ -26,8 +26,8 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundStyle(.red)
                 }
-                Toggle("Hide Dock icon and show in the menu bar", isOn: dockBinding)
-                Text("Grok stays in the menu bar instead of the Dock. Use the Grok logo, the Grokling, or the hotkey to reopen it.")
+                Toggle("Always hide Dock icon", isOn: dockBinding)
+                Text("Off: chat shows in the Dock; closing the window leaves only the menu-bar icon. On: stay in the menu bar even while chat is open.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

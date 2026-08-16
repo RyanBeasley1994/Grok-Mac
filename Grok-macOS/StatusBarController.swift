@@ -17,13 +17,14 @@ final class StatusBarController: NSObject {
 
     func attach(state: BrowserState) {
         self.state = state
-        cancellable = state.$hideInDock.sink { [weak self] hidden in
-            self?.apply(hideInDock: hidden)
+        AppPresentation.statusBar = self
+        cancellable = state.$hideInDock.sink { _ in
+            AppPresentation.sync()
         }
-        apply(hideInDock: state.hideInDock)
+        AppPresentation.sync()
     }
 
-    private func apply(hideInDock: Bool) {
+    func apply(hideInDock: Bool) {
         if hideInDock {
             showItem()
             NSApp.setActivationPolicy(.accessory)
@@ -152,6 +153,18 @@ final class StatusBarController: NSObject {
         image?.isTemplate = true
         image?.size = NSSize(width: 18, height: 18)
         return image ?? NSImage()
+    }
+}
+
+/// Dock while chat is open; menu bar extra when chat is closed (or always, if hideInDock).
+@MainActor
+enum AppPresentation {
+    static weak var statusBar: StatusBarController?
+
+    static func sync(chatVisible: Bool? = nil) {
+        let chatOpen = chatVisible ?? ChatWindowController.shared.isShowing()
+        let alwaysMenuBar = BrowserState.shared?.hideInDock == true
+        statusBar?.apply(hideInDock: alwaysMenuBar || !chatOpen)
     }
 }
 

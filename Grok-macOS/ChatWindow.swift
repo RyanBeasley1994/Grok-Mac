@@ -11,7 +11,7 @@ import AppKit
 import SwiftUI
 
 @MainActor
-final class ChatWindowController {
+final class ChatWindowController: NSObject, NSWindowDelegate {
 
     static let shared = ChatWindowController()
 
@@ -24,6 +24,7 @@ final class ChatWindowController {
 
     func show() {
         HotKeyManager.shared.suppressChatReveal = false
+        AppPresentation.sync(chatVisible: true)
         let window = existing()
         window.alphaValue = 1
         window.ignoresMouseEvents = false
@@ -31,10 +32,12 @@ final class ChatWindowController {
         HotKeyManager.shared.activateApp()
         window.makeKeyAndOrderFront(nil)
         HotKeyManager.shared.mainWindow = window
+        AppPresentation.sync(chatVisible: true)
     }
 
     func hide() {
         window?.orderOut(nil)
+        AppPresentation.sync(chatVisible: false)
     }
 
     func toggle() {
@@ -43,6 +46,11 @@ final class ChatWindowController {
         } else {
             show()
         }
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        hide()
+        return false
     }
 
     private func existing() -> NSWindow {
@@ -63,6 +71,7 @@ final class ChatWindowController {
         window.isReleasedWhenClosed = false
         window.identifier = NSUserInterfaceItemIdentifier("grok.chat")
         window.setFrameAutosaveName("GrokChat")
+        window.delegate = self
         window.contentView = NSHostingView(rootView: ContentView(state: state))
         window.center()
         self.window = window
