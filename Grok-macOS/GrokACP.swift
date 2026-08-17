@@ -18,6 +18,7 @@ final class GrokACPSession {
     private var sessionID: String?
     private var chunks = ""
     private var authenticated = false
+    private var onPartial: ((String) -> Void)?
     var isReady: Bool { process?.isRunning == true && sessionID != nil }
 
     func start() async throws {
@@ -37,7 +38,7 @@ final class GrokACPSession {
             "--no-subagents",
             "--reasoning-effort", "low",
             "--rules", GrokCLI.spokenRules,
-            "--disallowed-tools", GrokCLI.disallowedTools(allowTools: true),
+            "--disallowed-tools", GrokCLI.disallowedTools(allowTools: false),
             "agent", "stdio",
         ]
         process.currentDirectoryURL = FileManager.default.homeDirectoryForCurrentUser
@@ -111,16 +112,24 @@ final class GrokACPSession {
         CompanionDebug.log("acp.ready session=\(id)")
     }
 
-    func prompt(_ text: String) async throws -> GrokCLI.Reply {
+    func prompt(_ text: String, onPartial: ((String) -> Void)? = nil) async throws -> GrokCLI.Reply {
         guard isReady, let sessionID else {
             throw GrokCLI.CLIError.failed("ACP session is not ready.")
         }
         chunks = ""
+        self.onPartial = onPartial
         CompanionDebug.log("acp.prompt session=\(sessionID) chars=\(text.count)")
-        let result = try await request("session/prompt", [
-            "sessionId": sessionID,
-            "prompt": [["type": "text", "text": text]],
-        ], timeout: 180)
+        let result: [String: Any]
+        defer { self.onPartial = nil }
+        do {
+            result = try await request("session/prompt", [
+                "sessionId": sessionID,
+                "prompt": [["type": "text", "text": text]],
+            ], timeout: 25)
+        } catch {
+            self.onPartial = nil
+            throw error
+        }
         let spoken = chunks.trimmingCharacters(in: .whitespacesAndNewlines)
         if spoken.isEmpty {
             throw GrokCLI.CLIError.emptyReply
@@ -182,13 +191,17 @@ final class GrokACPSession {
 
     private func appendChunk(from params: [String: Any]?) {
         guard let update = params?["update"] as? [String: Any] else { return }
-        let kind = update["sessionUpdate"] as? String
-        guard kind == "agent_message_chunk" || kind == "agent_message" else { return }
+        let kind = update["sessionUpdate"] as? String ?? "?"
+        if kind != "agent_message_chunk" && kind != "agent_message" {
+            CompanionDebug.log("acp.update \(kind)")
+            return
+        }
         if let text = (update["content"] as? [String: Any])?["text"] as? String {
             chunks += text
         } else if let text = update["text"] as? String {
             chunks += text
         }
+        onPartial?(chunks)
     }
 
     private func autoAllow(id: Any, params: [String: Any]?) {

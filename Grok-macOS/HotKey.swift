@@ -20,6 +20,7 @@ final class HotKeyManager {
     static let toggleHotKeyID: UInt32 = 1
     static let voiceHotKeyID: UInt32 = 2
     static let escapeHotKeyID: UInt32 = 3
+    static let askHotKeyID: UInt32 = 4
 
     weak var mainWindow: NSWindow?
     /// Voice start must not raise the SwiftUI chat window.
@@ -32,6 +33,7 @@ final class HotKeyManager {
 
     private var toggleHotKeyRef: EventHotKeyRef?
     private var voiceHotKeyRef: EventHotKeyRef?
+    private var askHotKeyRef: EventHotKeyRef?
     private var escapeHotKeyRef: EventHotKeyRef?
     private var escapeMonitor: Any?
     private var handlerRef: EventHandlerRef?
@@ -58,6 +60,10 @@ final class HotKeyManager {
             UnregisterEventHotKey(voiceHotKeyRef)
             self.voiceHotKeyRef = nil
         }
+        if let askHotKeyRef {
+            UnregisterEventHotKey(askHotKeyRef)
+            self.askHotKeyRef = nil
+        }
         setEscapeStopsVoice(false)
     }
 
@@ -81,15 +87,27 @@ final class HotKeyManager {
             0,
             &voiceHotKeyRef
         )
+        let ask = KeyCombo.stored(.ask)
+        RegisterEventHotKey(
+            ask.keyCode,
+            ask.carbonModifiers,
+            EventHotKeyID(signature: Self.signature, id: Self.askHotKeyID),
+            GetApplicationEventTarget(),
+            0,
+            &askHotKeyRef
+        )
     }
 
     func handle(hotKeyID: EventHotKeyID) {
+        CompanionDebug.log("hotkey id=\(hotKeyID.id)")
         guard hotKeyID.signature == Self.signature else { return }
         switch hotKeyID.id {
         case Self.toggleHotKeyID:
             toggle()
         case Self.voiceHotKeyID:
             startVoiceChat()
+        case Self.askHotKeyID:
+            SelectionCapture.askGrok()
         case Self.escapeHotKeyID:
             onStopVoice?()
         default:
@@ -144,7 +162,7 @@ final class HotKeyManager {
     }
 
     func hideChatWindow() {
-        ChatWindowController.shared.hide()
+        ChatWindowController.shared.hideImmediately()
     }
 
     func showMainWindow() {
@@ -185,7 +203,7 @@ private nonisolated func hotKeyEventHandler(
             &hotKeyID
         )
     }
-    MainActor.assumeIsolated {
+    Task { @MainActor in
         HotKeyManager.shared.handle(hotKeyID: hotKeyID)
     }
     return noErr
@@ -200,11 +218,6 @@ struct WindowGrabber: NSViewRepresentable {
             super.viewDidMoveToWindow()
             if let window {
                 HotKeyManager.shared.mainWindow = window
-                window.titleVisibility = .hidden
-                window.titlebarAppearsTransparent = true
-                window.styleMask.insert(.fullSizeContentView)
-                window.isMovableByWindowBackground = false
-                window.backgroundColor = NSColor(white: 0.08, alpha: 1)
             }
         }
     }
@@ -216,10 +229,23 @@ struct WindowGrabber: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
-/// Transparent region whose mouse-downs drag the window — used in place of a titlebar.
+/// Transparent strip that steals hits from WKWebView so the window can be
+/// dragged and double-clicked to zoom without a visible title bar.
 struct TitlebarDragRegion: NSViewRepresentable {
     private final class DragView: NSView {
         override var mouseDownCanMoveWindow: Bool { true }
+
+        override func hitTest(_ point: NSPoint) -> NSView? { self }
+
+        override func mouseDown(with event: NSEvent) {
+            window?.performDrag(with: event)
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            if event.clickCount == 2 {
+                window?.zoom(nil)
+            }
+        }
     }
 
     func makeNSView(context: Context) -> NSView { DragView() }

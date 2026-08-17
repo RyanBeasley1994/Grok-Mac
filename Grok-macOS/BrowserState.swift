@@ -26,6 +26,8 @@ final class BrowserState: ObservableObject {
     @Published private(set) var focusedTab: WebViewModel
     @Published private(set) var companionVisible: Bool
     @Published private(set) var hideInDock: Bool
+    @Published private(set) var chatLayout: ChatLayout
+    @Published private(set) var chatSidebarEdge: ChatSidebarEdge
     @Published private(set) var companionScale: Double
     @Published private(set) var voiceActivationMode: VoiceActivationMode
     @Published private(set) var experimentalCompanion: Bool
@@ -54,6 +56,8 @@ final class BrowserState: ObservableObject {
     private let wakeWord = WakeWordListener()
     private static let companionVisibleKey = "companionVisible"
     private static let hideInDockKey = "hideInDock"
+    private static let chatLayoutKey = "chatLayout"
+    private static let chatSidebarEdgeKey = "chatSidebarEdge"
     private static let companionScaleKey = "companionScale"
     private static let wakeWordEnabledKey = "wakeWordEnabled"
     private static let voiceActivationModeKey = "voiceActivationMode"
@@ -70,6 +74,18 @@ final class BrowserState: ObservableObject {
             companionVisible = UserDefaults.standard.bool(forKey: Self.companionVisibleKey)
         }
         hideInDock = UserDefaults.standard.bool(forKey: Self.hideInDockKey)
+        if let raw = UserDefaults.standard.string(forKey: Self.chatLayoutKey),
+           let layout = ChatLayout(rawValue: raw) {
+            chatLayout = layout
+        } else {
+            chatLayout = .sidebar
+        }
+        if let raw = UserDefaults.standard.string(forKey: Self.chatSidebarEdgeKey),
+           let edge = ChatSidebarEdge(rawValue: raw) {
+            chatSidebarEdge = edge
+        } else {
+            chatSidebarEdge = .right
+        }
         let storedScale = UserDefaults.standard.object(forKey: Self.companionScaleKey) == nil
             ? 1.0
             : UserDefaults.standard.double(forKey: Self.companionScaleKey)
@@ -139,6 +155,7 @@ final class BrowserState: ObservableObject {
         mascotBrowser.stopVoiceChat()
         if activeTab.isVoiceActive { activeTab.stopVoiceChat() }
         if pinnedTab?.isVoiceActive == true { pinnedTab?.stopVoiceChat() }
+        AppPresentation.sync()
     }
 
     func toggleVoiceChat() {
@@ -157,6 +174,20 @@ final class BrowserState: ObservableObject {
     func setHideInDock(_ hidden: Bool) {
         hideInDock = hidden
         UserDefaults.standard.set(hidden, forKey: Self.hideInDockKey)
+    }
+
+    func setChatLayout(_ layout: ChatLayout) {
+        guard chatLayout != layout else { return }
+        chatLayout = layout
+        UserDefaults.standard.set(layout.rawValue, forKey: Self.chatLayoutKey)
+        ChatWindowController.shared.applyLayout()
+    }
+
+    func setChatSidebarEdge(_ edge: ChatSidebarEdge) {
+        guard chatSidebarEdge != edge else { return }
+        chatSidebarEdge = edge
+        UserDefaults.standard.set(edge.rawValue, forKey: Self.chatSidebarEdgeKey)
+        ChatWindowController.shared.applyLayout()
     }
 
     func setCompanionScale(_ scale: Double) {
@@ -340,6 +371,7 @@ final class BrowserState: ObservableObject {
                 guard let self else { return }
                 self.wakeWord.sync(enabled: self.voiceActivationMode == .heyGrok, voiceActive: self.isVoiceActive)
                 HotKeyManager.shared.setEscapeStopsVoice(self.isVoiceActive)
+                AppPresentation.sync()
             }
     }
 }

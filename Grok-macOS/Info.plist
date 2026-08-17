@@ -38,5 +38,48 @@
 	<string>NSApplication</string>
 	<key>NSSpeechRecognitionUsageDescription</key>
 	<string>Grok uses speech recognition to hear you during voice conversations and to listen on-device for “Hey Grok”.</string>
+	<key>NSServices</key>
+	<array>
+		<dict>
+			<key>NSMenuItem</key>
+			<dict>
+				<key>default</key>
+				<string>Ask Grok</string>
+			</dict>
+			<key>NSMessage</key>
+			<string>askGrokService</string>
+			<key>NSPortName</key>
+			<string>Grok</string>
+			<key>NSSendTypes</key>
+			<array>
+				<string>public.utf8-plain-text</string>
+				<string>NSStringPboardType</string>
+			</array>
+			<key>NSRequiredContext</key>
+			<dict>
+				<key>NSTextContent</key>
+				<string>Text</string>
+			</dict>
+			<key>NSTimeout</key>
+			<string>30000</string>
+		</dict>
+		<dict>
+			<key>NSMenuItem</key>
+			<dict>
+				<key>default</key>
+				<string>Ask Grok</string>
+			</dict>
+			<key>NSMessage</key>
+			<string>askGrokService</string>
+			<key>NSPortName</key>
+			<string>Grok</string>
+			<key>NSSendFileTypes</key>
+			<array>
+				<string>public.item</string>
+			</array>
+			<key>NSTimeout</key>
+			<string>30000</string>
+		</dict>
+	</array>
 </dict>
 </plist>

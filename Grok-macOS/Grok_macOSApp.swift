@@ -32,6 +32,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         CompanionDebug.log("app.launch experimental=\(BrowserState.shared?.experimentalCompanion ?? false) grok=\(GrokCLI.resolveBinary()?.path ?? "MISSING")")
         HotKeyManager.shared.register()
+        NSApp.servicesProvider = GrokServices.shared
+        NSUpdateDynamicServices()
         DispatchQueue.main.async { [weak self] in
             if let state = BrowserState.shared {
                 self?.attachCompanion(state: state)

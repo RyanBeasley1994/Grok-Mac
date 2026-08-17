@@ -163,24 +163,39 @@ final class CompanionTalk: ObservableObject {
             lastHeard = heard
             CompanionDebug.log("talk.heard turn=\(turn) “\(heard)”")
             setPhase(.thinking, "replying to “\(heard)”")
+            let spokenSoFar = SpokenAccumulator()
             let filler = Task { [speaker] in
-                try? await Task.sleep(nanoseconds: 900_000_000)
+                try? await Task.sleep(nanoseconds: 1_400_000_000)
                 guard !Task.isCancelled else { return }
                 let line = WorkingLine.next()
                 CompanionDebug.log("talk.working “\(line)”")
                 await speaker.speak(line)
             }
             do {
-                let spoken = try await cli.askSpoken(transcript: heard, sessionID: conversationID)
+                let spoken = try await cli.askSpoken(transcript: heard, sessionID: conversationID) { [speaker] partial in
+                    Task { @MainActor in
+                        guard spokenSoFar.text.isEmpty, let sentence = SpokenText.firstSentence(partial) else { return }
+                        spokenSoFar.text = sentence
+                        filler.cancel()
+                        CompanionDebug.log("talk.partial “\(sentence)”")
+                        speaker.stop()
+                        await speaker.speak(sentence)
+                    }
+                }
                 CompanionDebug.log("talk.spoken session=\(spoken.sessionID ?? "none") chars=\(spoken.text.count) “\(spoken.text.prefix(160))”")
                 if let id = spoken.sessionID { conversationID = id }
                 filler.cancel()
-                speaker.stop()
                 guard !Task.isCancelled, isActive else { break }
                 let firstRaw = spoken.text.trimmingCharacters(in: .whitespacesAndNewlines)
                 let first = firstRaw.isEmpty ? "Okay." : SpokenText.clean(spoken.text)
-                setPhase(.speaking, "reply \(first.count) chars")
-                await speaker.speak(first)
+                let leftover = SpokenText.leftover(full: first, alreadySaid: spokenSoFar.text)
+                setPhase(.speaking, "reply \(leftover.count) chars")
+                speaker.stop()
+                if leftover.isEmpty, spokenSoFar.text.isEmpty {
+                    await speaker.speak(first)
+                } else if !leftover.isEmpty {
+                    await speaker.speak(leftover)
+                }
                 CompanionDebug.log("talk.spoke turn=\(turn)")
             } catch is CancellationError {
                 filler.cancel()
@@ -236,6 +251,10 @@ final class CompanionTalk: ObservableObject {
         }
         return "Sorry, I hit a problem talking to Grok."
     }
+}
+
+private final class SpokenAccumulator {
+    var text = ""
 }
 
 /// Short lines spoken immediately so the user hears something while the CLI works.

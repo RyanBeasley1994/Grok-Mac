@@ -28,6 +28,7 @@ swiftc -parse-as-library -Onone \
   -framework Speech \
   -framework ServiceManagement \
   -framework Combine \
+  -framework ApplicationServices \
   -o "$MACOS/Grok" \
   $(ls "$SRC"/*.swift)
 

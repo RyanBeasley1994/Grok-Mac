@@ -12,14 +12,8 @@ struct ContentView: View {
 
     var body: some View {
         WebView(model: state.activeTab)
-            .frame(minWidth: 800, minHeight: 600)
+            .frame(minWidth: 320, minHeight: 400)
             .ignoresSafeArea()
             .background(WindowGrabber())
-            // Thin strip under the traffic lights so the window can still be dragged.
-            .overlay(alignment: .top) {
-                TitlebarDragRegion()
-                    .frame(height: 28)
-                    .padding(.leading, 78)
-            }
     }
 }

@@ -14,16 +14,19 @@ struct KeyCombo: Equatable {
 
     static let defaultToggle = KeyCombo(keyCode: UInt32(kVK_Space), carbonModifiers: UInt32(optionKey))
     static let defaultVoice = KeyCombo(keyCode: UInt32(kVK_Space), carbonModifiers: UInt32(optionKey | shiftKey))
+    static let defaultAsk = KeyCombo(keyCode: UInt32(kVK_ANSI_G), carbonModifiers: UInt32(optionKey | cmdKey))
 
-    enum Slot: String {
+    enum Slot: String, CaseIterable {
         case toggle
         case voice
+        case ask
 
         var defaultsKey: String { "hotkey.\(rawValue)" }
         var defaultValue: KeyCombo {
             switch self {
             case .toggle: return .defaultToggle
             case .voice: return .defaultVoice
+            case .ask: return .defaultAsk
             }
         }
     }

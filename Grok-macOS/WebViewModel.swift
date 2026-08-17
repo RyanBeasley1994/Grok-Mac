@@ -58,6 +58,8 @@ final class WebViewModel: NSObject, ObservableObject {
     private let scriptMessageProxy = ScriptMessageProxy()
     private var voiceStartToken = 0
     private var voiceHoldUntil = Date.distantPast
+    private var pendingAttachURLs: [URL] = []
+    private var pendingAskText: String?
 
     // Watches grok.com's sidebar (the full-height container hugging the
     // left edge): reports its CSS-pixel width so native overlays can track
@@ -230,6 +232,37 @@ final class WebViewModel: NSObject, ObservableObject {
 
     func newChat() {
         webView.load(URLRequest(url: Self.homeURL))
+    }
+
+    /// Drop a prompt into grok.com's composer and send it.
+    func askAbout(_ text: String) {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        pendingAskText = trimmed
+        CompanionDebug.log("ask.queue chars=\(trimmed.count)")
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            await self?.waitForComposer()
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            await self?.flushPendingAsk()
+        }
+    }
+
+    /// Queue files and attach them through grok.com's own file picker.
+    func attachFiles(_ urls: [URL]) {
+        let files = urls
+            .map { $0.standardizedFileURL }
+            .filter { FileManager.default.fileExists(atPath: $0.path) }
+        guard !files.isEmpty else { return }
+        pendingAttachURLs = files
+        CompanionDebug.log("attach.queue \(files.map(\.lastPathComponent).joined(separator: ", "))")
+        Task { @MainActor [weak self] in
+            // show() may have just kicked off a new-chat navigation
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            await self?.waitForComposer()
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            await self?.clickAttachControl()
+        }
     }
 
     func reload() {
@@ -408,6 +441,208 @@ final class WebViewModel: NSObject, ObservableObject {
     private func clickEndVoiceButton() async {
         _ = try? await webView.evaluateJavaScript(Self.voiceEndScript)
     }
+
+    private func waitForComposer() async {
+        if !isOnGrok {
+            webView.load(URLRequest(url: Self.homeURL))
+        }
+        for _ in 0..<30 {
+            if await composerReady() { return }
+            try? await Task.sleep(nanoseconds: 200_000_000)
+        }
+    }
+
+    private func composerReady() async -> Bool {
+        let ready = try? await webView.evaluateJavaScript(Self.composerReadyScript) as? Bool
+        return ready == true
+    }
+
+    private func flushPendingAsk() async {
+        guard let text = pendingAskText else { return }
+        webView.window?.makeKey()
+        webView.window?.makeFirstResponder(webView)
+        for attempt in 1...8 {
+            let inserted = await insertComposerText(text, send: false)
+            CompanionDebug.log("ask.insert attempt=\(attempt) ok=\(inserted)")
+            if inserted {
+                pendingAskText = nil
+                try? await Task.sleep(nanoseconds: 200_000_000)
+                _ = try? await webView.evaluateJavaScript(Self.sendClickScript)
+                return
+            }
+            try? await Task.sleep(nanoseconds: 300_000_000)
+        }
+        CompanionDebug.log("ask.insert giving up after retries — native paste")
+        pastePlainText(text)
+        pendingAskText = nil
+    }
+
+    private func pastePlainText(_ text: String) {
+        guard let window = webView.window ?? HotKeyManager.shared.mainWindow else { return }
+        window.makeKey()
+        window.makeFirstResponder(webView)
+        let pb = NSPasteboard.general
+        let previous = pb.string(forType: .string)
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        NSApp.sendAction(#selector(NSText.paste(_:)), to: webView, from: nil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            if let previous {
+                pb.clearContents()
+                pb.setString(previous, forType: .string)
+            }
+        }
+    }
+
+    @discardableResult
+    private func insertComposerText(_ text: String, send: Bool) async -> Bool {
+        guard let data = try? JSONSerialization.data(withJSONObject: [text]),
+              let encoded = String(data: data, encoding: .utf8) else { return false }
+        let script = """
+        (function () {
+            const text = \(encoded)[0];
+            const send = \(send ? "true" : "false");
+            \(Self.composerHelpers)
+            const el = findComposer();
+            if (!el) { return false; }
+            el.focus();
+            try { el.click(); } catch (e) {}
+            if (el.tagName === 'TEXTAREA' || el.tagName === 'INPUT') {
+                const proto = el.tagName === 'TEXTAREA'
+                    ? window.HTMLTextAreaElement.prototype
+                    : window.HTMLInputElement.prototype;
+                const setter = Object.getOwnPropertyDescriptor(proto, 'value')?.set;
+                if (setter) { setter.call(el, text); }
+                else { el.value = text; }
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+                el.dispatchEvent(new Event('change', { bubbles: true }));
+            } else {
+                try { document.execCommand('selectAll', false, null); } catch (e) {}
+                let ok = false;
+                try { ok = document.execCommand('insertText', false, text); } catch (e) {}
+                if (!ok) {
+                    el.innerHTML = '';
+                    el.textContent = text;
+                    el.dispatchEvent(new InputEvent('input', { bubbles: true, data: text, inputType: 'insertText' }));
+                    try {
+                        const dt = new DataTransfer();
+                        dt.setData('text/plain', text);
+                        el.dispatchEvent(new ClipboardEvent('paste', { bubbles: true, clipboardData: dt }));
+                    } catch (e) {}
+                }
+            }
+            return true;
+        })()
+        """
+        return (try? await webView.evaluateJavaScript(script) as? Bool) ?? false
+    }
+
+    private static var sendClickScript: String {
+        """
+        (function () {
+            \(composerHelpers)
+            const btn = findSend();
+            if (btn) { btn.click(); return true; }
+            const el = findComposer();
+            if (el) {
+                el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+                return true;
+            }
+            return false;
+        })()
+        """
+    }
+
+    private func clickAttachControl() async {
+        webView.window?.makeKey()
+        webView.window?.makeFirstResponder(webView)
+        let clicked = (try? await webView.evaluateJavaScript(Self.attachClickScript) as? Bool) ?? false
+        CompanionDebug.log("attach.click found=\(clicked) pending=\(pendingAttachURLs.count)")
+        if clicked, !pendingAttachURLs.isEmpty {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            _ = try? await webView.evaluateJavaScript(Self.attachMenuScript)
+        }
+    }
+
+    private static let attachClickScript = """
+    (function () {
+        const file = document.querySelector('input[type="file"]');
+        if (file) { file.click(); return true; }
+        const nodes = Array.from(document.querySelectorAll('button, [role="button"], label, a'));
+        for (const el of nodes) {
+            const l = (
+                (el.getAttribute('aria-label') || '') + ' ' +
+                (el.getAttribute('title') || '') + ' ' +
+                (el.textContent || '')
+            ).toLowerCase().replace(/\\s+/g, ' ');
+            if (/(attach|upload|add file|add photo|add image|paperclip|choose file)/.test(l)) {
+                el.click();
+                return true;
+            }
+        }
+        for (const el of nodes) {
+            const l = ((el.getAttribute('aria-label') || '') + ' ' + (el.getAttribute('title') || '')).toLowerCase();
+            if (l === '+' || l.includes('plus') || /\\badd\\b/.test(l)) {
+                el.click();
+                return true;
+            }
+        }
+        return false;
+    })()
+    """
+
+    private static let attachMenuScript = """
+    (function () {
+        const nodes = Array.from(document.querySelectorAll('button, [role="menuitem"], [role="option"], label, a, div'));
+        for (const el of nodes) {
+            const l = (
+                (el.getAttribute('aria-label') || '') + ' ' +
+                (el.getAttribute('title') || '') + ' ' +
+                (el.textContent || '')
+            ).toLowerCase().replace(/\\s+/g, ' ').trim();
+            if (/(upload file|upload files|add files|choose file|from device|computer|photos|images|attach file)/.test(l)) {
+                el.click();
+                return true;
+            }
+        }
+        const file = document.querySelector('input[type="file"]');
+        if (file) { file.click(); return true; }
+        return false;
+    })()
+    """
+
+    private static var composerReadyScript: String {
+        """
+        (function () {
+            \(composerHelpers)
+            return !!findComposer();
+        })()
+        """
+    }
+
+    private static let composerHelpers = """
+        function findComposer() {
+            const nodes = Array.from(document.querySelectorAll(
+                'textarea, [contenteditable="true"], [role="textbox"], .ProseMirror, [data-placeholder]'
+            ));
+            const visible = nodes.filter(el => {
+                const r = el.getBoundingClientRect();
+                const s = getComputedStyle(el);
+                return r.width > 40 && r.height > 16 && s.visibility !== 'hidden' && s.display !== 'none';
+            });
+            if (!visible.length) { return null; }
+            visible.sort((a, b) => b.getBoundingClientRect().bottom - a.getBoundingClientRect().bottom);
+            return visible[0];
+        }
+        function findSend() {
+            const buttons = Array.from(document.querySelectorAll('button, [role="button"]'));
+            for (const b of buttons) {
+                const l = ((b.getAttribute('aria-label') || '') + ' ' + (b.getAttribute('title') || '')).toLowerCase();
+                if (/(send|submit|submit message)/.test(l)) { return b; }
+            }
+            return null;
+        }
+    """
 
     private func startVoicePolling() {
         Task { @MainActor [weak self] in
@@ -624,6 +859,18 @@ private final class ScriptMessageProxy: NSObject, WKScriptMessageHandler {
 
 extension WebViewModel: WKNavigationDelegate {
 
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard pendingAskText != nil || !pendingAttachURLs.isEmpty else { return }
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            await self?.waitForComposer()
+            await self?.flushPendingAsk()
+            if self?.pendingAttachURLs.isEmpty == false {
+                await self?.clickAttachControl()
+            }
+        }
+    }
+
     func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction,
@@ -738,6 +985,13 @@ extension WebViewModel: WKUIDelegate {
         initiatedByFrame frame: WKFrameInfo,
         completionHandler: @escaping ([URL]?) -> Void
     ) {
+        if !pendingAttachURLs.isEmpty {
+            let urls = pendingAttachURLs
+            pendingAttachURLs = []
+            CompanionDebug.log("attach.openPanel inject \(urls.count)")
+            completionHandler(urls)
+            return
+        }
         let panel = NSOpenPanel()
         panel.allowsMultipleSelection = parameters.allowsMultipleSelection
         panel.canChooseDirectories = parameters.allowsDirectories

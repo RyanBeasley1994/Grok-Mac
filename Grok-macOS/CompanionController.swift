@@ -114,15 +114,20 @@ final class CompanionController {
         let root = NSView(frame: NSRect(origin: .zero, size: currentSize()))
         root.wantsLayer = true
         root.layer?.backgroundColor = NSColor.clear.cgColor
+        root.postsFrameChangedNotifications = false
 
         // Full grok.com layout lives in this window but is clipped out of
         // sight so only the Grokling shows. Classic voice needs the page
         // on-screen so the mic can attach without opening chat.
+        let webHost = HitThroughView(frame: root.bounds)
+        webHost.autoresizingMask = [.width, .height]
         let web = state.mascotBrowser.webView
         web.frame = NSRect(origin: .zero, size: Self.pageSize)
         web.autoresizingMask = []
         web.alphaValue = 0
-        root.addSubview(web)
+        web.unregisterDraggedTypes()
+        webHost.addSubview(web)
+        root.addSubview(webHost)
 
         let hosting = ClearHostingView(rootView: CompanionView(state: state) { [weak self] in
             self?.persistPosition()
@@ -131,6 +136,9 @@ final class CompanionController {
         hosting.layer?.backgroundColor = NSColor.clear.cgColor
         hosting.frame = root.bounds
         hosting.autoresizingMask = [.width, .height]
+        hosting.onDropFiles = { urls in
+            ChatWindowController.shared.openWithFiles(urls)
+        }
         root.addSubview(hosting)
 
         panel.contentView = root
@@ -173,13 +181,45 @@ private final class CompanionPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
+/// Hidden grok.com page must not steal clicks or Finder drops.
+private final class HitThroughView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
 private final class ClearHostingView<Content: View>: NSHostingView<Content> {
+    var onDropFiles: (([URL]) -> Void)?
+
     override var isOpaque: Bool { false }
     override var mouseDownCanMoveWindow: Bool { false }
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         layer?.backgroundColor = NSColor.clear.cgColor
+        registerForDraggedTypes([.fileURL])
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        fileURLs(from: sender).isEmpty ? [] : .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        fileURLs(from: sender).isEmpty ? [] : .copy
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = fileURLs(from: sender)
+        guard !urls.isEmpty else { return false }
+        onDropFiles?(urls)
+        return true
+    }
+
+    override func concludeDragOperation(_ sender: NSDraggingInfo?) {}
+
+    private func fileURLs(from sender: NSDraggingInfo) -> [URL] {
+        sender.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: [.urlReadingFileURLsOnly: true]
+        ) as? [URL] ?? []
     }
 }
 
@@ -256,8 +296,8 @@ struct CompanionView: View {
         if state.isWakeWordListening { return "Listening for “Hey Grok”. Click to start voice, or drag to move." }
         if state.voiceActivationMode == .heySiri { return "Say “Hey Siri, talk to Grok”. Click to start voice, or drag to move." }
         return state.experimentalCompanion
-            ? "Click to talk. What you say goes to a Grok CLI session; Grok answers out loud."
-            : "Click to start voice chat. Drag to move."
+            ? "Click to talk. Drop a file to open it in chat."
+            : "Click to start voice. Drop a file to open it in chat. Drag to move."
     }
 
     private var talkingOrb: some View {
@@ -323,7 +363,7 @@ struct CompanionView: View {
     }
 
     private var moveGesture: some Gesture {
-        DragGesture(minimumDistance: 0)
+        DragGesture(minimumDistance: 6)
             .onChanged { _ in
                 let mouse = NSEvent.mouseLocation
                 guard let window = companionWindow() else { return }
@@ -341,8 +381,8 @@ struct CompanionView: View {
                     y: (dragOrigin?.y ?? 0) + dy
                 ))
             }
-            .onEnded { _ in
-                if didDrag {
+            .onEnded { value in
+                if didDrag || hypot(value.translation.width, value.translation.height) > 4 {
                     onMoved()
                 } else {
                     state.toggleVoiceChat()

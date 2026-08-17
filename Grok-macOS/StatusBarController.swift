@@ -27,10 +27,15 @@ final class StatusBarController: NSObject {
     func apply(hideInDock: Bool) {
         if hideInDock {
             showItem()
-            NSApp.setActivationPolicy(.accessory)
+            if NSApp.activationPolicy() != .accessory {
+                NSApp.setActivationPolicy(.accessory)
+            }
         } else {
             hideItem()
-            NSApp.setActivationPolicy(.regular)
+            if NSApp.activationPolicy() != .regular {
+                NSApp.setActivationPolicy(.regular)
+            }
+            NSApp.activate()
         }
     }
 
@@ -156,15 +161,22 @@ final class StatusBarController: NSObject {
     }
 }
 
-/// Dock while chat is open; menu bar extra when chat is closed (or always, if hideInDock).
+/// Dock only while the chat window is up. Voice (including experimental)
+/// does not put the app in the Dock.
 @MainActor
 enum AppPresentation {
     static weak var statusBar: StatusBarController?
+    private static var chatPresented = false
 
     static func sync(chatVisible: Bool? = nil) {
-        let chatOpen = chatVisible ?? ChatWindowController.shared.isShowing()
-        let alwaysMenuBar = BrowserState.shared?.hideInDock == true
-        statusBar?.apply(hideInDock: alwaysMenuBar || !chatOpen)
+        // Only an explicit show/hide may change this. Voice and other
+        // publishers used to call sync() while the sidebar was still
+        // ordering front, which flipped the app back to accessory and
+        // the panel never appeared.
+        if let chatVisible {
+            chatPresented = chatVisible
+        }
+        statusBar?.apply(hideInDock: !chatPresented)
     }
 }
 

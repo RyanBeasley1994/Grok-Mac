@@ -34,11 +34,10 @@ enum GrokCLI {
     }
 
     static let spokenRules = """
-        You are talking out loud to the user. Reply as if this is a spoken conversation.
-        Keep it natural, brief, and easy to hear. Do not mention file paths, folder names, \
-        code, commands, URLs, JSON, markdown, or how you used tools. You may use web search \
-        for current facts. You may use tools and work on this computer. Then summarize what \
-        you did or found in plain speech. If you need more, ask a short spoken question.
+        You are in a spoken conversation. Answer like grok.com chat: immediately, \
+        in one to three short sentences. No tools. No computer work. No web search. \
+        No markdown, lists, paths, or URLs. If you cannot know something without tools, \
+        say so in one sentence.
         """
 
     static let noWorkToken = "NO_WORK"
@@ -75,6 +74,11 @@ enum GrokCLI {
         "enter_plan_mode",
         "exit_plan_mode",
         "monitor",
+        "web_search",
+        "web_fetch",
+        "web_search",
+        "browser",
+        "code_execution",
     ]
 
     static func disallowedTools(allowTools: Bool) -> String {
@@ -118,14 +122,9 @@ enum GrokCLI {
 
     static func speakFirstPrompt(forSpoken transcript: String) -> String {
         """
-        [Spoken conversation]
         \(spokenRules)
 
-        Give a spoken reply. Use web search when you need current information. \
-        If they asked you to do something on this Mac, do it, then say what you did.
-
-        The user said:
-        \(transcript)
+        User: \(transcript)
         """
     }
 
@@ -201,15 +200,19 @@ final class GrokCLIClient {
         process = nil
     }
 
-    func askSpoken(transcript: String, sessionID: String?) async throws -> GrokCLI.Reply {
+    func askSpoken(
+        transcript: String,
+        sessionID: String?,
+        onPartial: ((String) -> Void)? = nil
+    ) async throws -> GrokCLI.Reply {
         CompanionDebug.log("cli.askSpoken acp=\(acp.isReady) session=\(sessionID ?? warmID ?? "new") transcript=\(transcript)")
         if acp.isReady {
-            return try await acp.prompt(GrokCLI.speakFirstPrompt(forSpoken: transcript))
+            return try await acp.prompt(GrokCLI.speakFirstPrompt(forSpoken: transcript), onPartial: onPartial)
         }
         let reply = try await ask(
             prompt: GrokCLI.speakFirstPrompt(forSpoken: transcript),
             sessionID: sessionID ?? warmID,
-            allowTools: true
+            allowTools: false
         )
         if let id = reply.sessionID { warmID = id }
         return reply
@@ -440,6 +443,28 @@ final class GrokCLIClient {
 }
 
 enum SpokenText {
+    static func firstSentence(_ raw: String) -> String? {
+        let cleaned = clean(raw).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleaned.count >= 12 else { return nil }
+        let marks = CharacterSet(charactersIn: ".?!")
+        guard let index = cleaned.unicodeScalars.firstIndex(where: { marks.contains($0) }) else {
+            return cleaned.count >= 40 ? cleaned : nil
+        }
+        let end = cleaned.index(after: index)
+        let sentence = String(cleaned[..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return sentence.count >= 8 ? sentence : nil
+    }
+
+    static func leftover(full: String, alreadySaid: String) -> String {
+        let cleanFull = clean(full)
+        guard !alreadySaid.isEmpty else { return cleanFull }
+        if cleanFull.hasPrefix(alreadySaid) {
+            return String(cleanFull.dropFirst(alreadySaid.count))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return cleanFull.localizedCaseInsensitiveContains(alreadySaid) ? "" : cleanFull
+    }
+
     static func clean(_ raw: String) -> String {
         var text = raw
         if let fences = try? NSRegularExpression(pattern: "```[\\s\\S]*?```") {

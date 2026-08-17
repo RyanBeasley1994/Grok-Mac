@@ -88,21 +88,21 @@ final class WakeWordListener {
             object: audioEngine,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.handleEngineConfigChange() }
+            Task { @MainActor in self?.handleEngineConfigChange() }
         })
         observers.append(center.addObserver(
             forName: NSApplication.didBecomeActiveNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.retryIfNeeded() }
+            Task { @MainActor in self?.retryIfNeeded() }
         })
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didWakeNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.handleEngineConfigChange() }
+            Task { @MainActor in self?.handleEngineConfigChange() }
         })
     }
 
